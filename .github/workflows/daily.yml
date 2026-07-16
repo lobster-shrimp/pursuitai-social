@@ -1,0 +1,70 @@
+name: Daily social post
+
+on:
+  schedule:
+    # 13:30 UTC = 9:30 AM ET — strong engagement window for B2B
+    - cron: "30 13 * * 1-6"   # Mon–Sat; give Sunday a rest
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (generate, don't post)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-post
+  cancel-in-progress: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install chromium --with-deps
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Prepare assets + captions
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python engine/run.py --prepare
+
+      - name: Commit assets (so Instagram can fetch public URLs)
+        run: |
+          git config user.name "pursuitai-bot"
+          git config user.email "bot@pursuitai.net"
+          git add -A assets || true
+          git commit -m "assets $(date -u +%F)" || echo "nothing to commit"
+          git push
+
+      - name: Publish to X + Instagram
+        if: ${{ !inputs.dry_run }}
+        env:
+          X_API_KEY: ${{ secrets.X_API_KEY }}
+          X_API_SECRET: ${{ secrets.X_API_SECRET }}
+          X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
+          X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          MEDIA_BASE_URL: https://raw.githubusercontent.com/${{ github.repository }}/main
+        run: python engine/run.py --publish
+
+      - name: Commit state + post log
+        run: |
+          git pull --rebase || true
+          git add -A content logs || true
+          git commit -m "post log $(date -u +%F)" || echo "nothing to commit"
+          git push
